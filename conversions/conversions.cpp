@@ -5,36 +5,52 @@
 #include <vector>
 #include <random>
 #include <algorithm>
+#include <chrono>
 #include <sstream>
-#include "../searchers/simpleperf.h"
+#include <cstdio>
 
-std::vector<std::string> GenRandVecOfNumbers(size_t count, uint32_t minNumLen, uint32_t maxNumLen)
+// from https://stackoverflow.com/questions/33975479/escape-and-clobber-equivalent-in-msvc
+/**
+ * Call doNotOptimizeAway(var) against variables that you use for
+ * benchmarking but otherwise are useless. The compiler tends to do a
+ * good job at eliminating unused variables, and this function fools
+ * it into thinking var is in fact needed.
+ */
+#ifdef _MSC_VER
+
+#pragma optimize("", off)
+
+template <class T>
+void DoNotOptimizeAway(T&& datum) {
+	datum = datum;
+}
+
+#pragma optimize("", on)
+
+#elif defined(__clang__)
+
+template <class T>
+__attribute__((__optnone__)) void DoNotOptimizeAway(T&& /* datum */) {}
+
+#else
+
+template <class T>
+void DoNotOptimizeAway(T&& datum) {
+	asm volatile("" : "+r" (datum));
+}
+
+#endif
+
+template <typename TFunc> void RunAndMeasure(const char* title, TFunc func)
 {
-	if (minNumLen > maxNumLen)
-		return {};
-
-	std::vector<std::string> out;
-	out.reserve(count);
-
-	std::mt19937 rng;
-	rng.seed(std::random_device()());
-	std::uniform_int_distribution<std::mt19937::result_type> distLen(minNumLen, maxNumLen);
-	std::uniform_int_distribution<std::mt19937::result_type> distDigit('0', '9');
-	std::uniform_int_distribution<std::mt19937::result_type> distFirstDigit('1', '9');
-
-	for (size_t i = 0; i < count; ++i)
-	{
-		auto len = distLen(rng);
-		std::string num(len, ' ');
-		auto iter = std::begin(num);
-		*iter = static_cast<char>(distFirstDigit(rng));
-		++iter;
-		std::transform(iter, std::end(num), iter,
-			[&rng, &distDigit](unsigned char c) { return static_cast<char>(distDigit(rng)); });
-		out.emplace_back(num);
-	}
-
-	return out;
+	auto ret = func();
+	ret = func();
+	DoNotOptimizeAway(ret);
+	const auto start = std::chrono::steady_clock::now();
+	ret = func();
+	const auto end = std::chrono::steady_clock::now();
+	DoNotOptimizeAway(ret);
+	std::cout << title << ": " << std::chrono::duration <double, std::milli>(end - start).count() << " ms\n";
 }
 
 std::vector<int> GenRandVecOfNumbers(size_t count)
@@ -44,108 +60,12 @@ std::vector<int> GenRandVecOfNumbers(size_t count)
 
 	std::mt19937 rng;
 	rng.seed(std::random_device()());
-	std::uniform_int_distribution<std::mt19937::result_type> dist(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
+	std::uniform_int_distribution<int> dist(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
 
 	for (size_t i = 0; i < count; ++i)
 		out.push_back(dist(rng));
 
 	return out;
-}
-
-void Benchmark(size_t ITERS, size_t vecSize, uint32_t minNumLen, uint32_t maxNumLen)
-{
-	const auto numStrVec = GenRandVecOfNumbers(vecSize, minNumLen, maxNumLen);
-	std::vector<int> numVec(numStrVec.size());
-
-	RunAndMeasure("from_chars", [&]() {
-		for (size_t iter = 0; iter < ITERS; ++iter)
-		{
-			for (size_t i = 0; i < numStrVec.size(); ++i)
-			{
-				std::from_chars(numStrVec[i].data(), numStrVec[i].data() + numStrVec[i].size(), numVec[i]);
-			}
-		}
-		return numVec.size();
-	});
-
-	RunAndMeasure("stoi", [&]() {
-		for (size_t iter = 0; iter < ITERS; ++iter)
-		{
-			for (size_t i = 0; i < numStrVec.size(); ++i)
-			{
-				numVec[i] = std::stoi(numStrVec[i]);
-			}
-		}
-		return numVec.size();
-	});
-
-	RunAndMeasure("atoi", [&]() {
-		for (size_t iter = 0; iter < ITERS; ++iter)
-		{
-			for (size_t i = 0; i < numStrVec.size(); ++i)
-			{
-				numVec[i] = atoi(numStrVec[i].c_str());
-			}
-		}
-		return numVec.size();
-	});
-
-	RunAndMeasure("stringstream", [&]() {
-		for (size_t iter = 0; iter < ITERS; ++iter)
-		{
-			for (size_t i = 0; i < numStrVec.size(); ++i)
-			{
-				std::istringstream ss(numStrVec[i]);
-				ss >> numVec[i];
-			}
-		}
-		return numVec.size();
-	});
-
-	// the other way around:
-	std::vector<std::string> vecNumBack(numStrVec.size());
-	std::string strTemp(9, ' ');
-
-	RunAndMeasure("to_chars", [&]() {
-		for (size_t iter = 0; iter < ITERS; ++iter)
-		{
-			for (size_t i = 0; i < numStrVec.size(); ++i)
-			{
-				const auto res = std::to_chars(strTemp.data(), strTemp.data() + strTemp.size(), numVec[i]);
-				vecNumBack[i] = std::string_view(strTemp.data(), res.ptr - strTemp.data());
-			}
-		}
-		return numVec.size();
-	});
-
-	RunAndMeasure("to_string", [&]() {
-		for (size_t iter = 0; iter < ITERS; ++iter)
-		{
-			for (size_t i = 0; i < numStrVec.size(); ++i)
-			{
-				vecNumBack[i] = std::to_string(numVec[i]);
-			}
-		}
-		return numVec.size();
-	});
-
-	RunAndMeasure("sprintf", [&]() {
-		for (size_t iter = 0; iter < ITERS; ++iter)
-		{
-			for (size_t i = 0; i < numStrVec.size(); ++i)
-			{
-				auto res = snprintf(strTemp.data(), 10, "%d", numVec[i]);
-				vecNumBack[i] = std::string_view(strTemp.data(), (strTemp.data()+res)- strTemp.data());
-			}
-		}
-		return numVec.size();
-	});
-
-	for (size_t i = 0; i < numStrVec.size(); ++i)
-	{
-		if (numStrVec[i] != vecNumBack[i])
-			std::cout << "error! " << i << " " << numStrVec[i] << " !=  " << vecNumBack[i] << '\n';
-	}
 }
 
 void CheckVectors(const std::vector<int>& a, const std::vector<int>& b)
@@ -237,7 +157,7 @@ void Benchmark2(size_t ITERS, size_t vecSize)
 		{
 			for (size_t i = 0; i < numIntVec.size(); ++i)
 			{
-				auto res = snprintf(strTemp.data(), 10, "%d", numIntVec[i]);
+				auto res = snprintf(strTemp.data(), 15, "%d", numIntVec[i]);
 				numStrVec[i] = std::string_view(strTemp.data(), (strTemp.data() + res) - strTemp.data());
 			}
 		}
@@ -285,56 +205,10 @@ void Benchmark2(size_t ITERS, size_t vecSize)
 
 int main(int argc, const char** argv)
 {
-#ifdef _DEBUG
-	const size_t DEFAULT_ITER = 1;
-	const size_t DEFAULT_VECSIZE = 20;
-#else
-	const size_t DEFAULT_ITER = 1000;
-	const size_t DEFAULT_VECSIZE = 10000;
-#endif
-
-	const size_t ITERS = argc > 1 ? atoi(argv[1]) : DEFAULT_ITER;
+	const size_t ITERS = argc > 1 ? atoi(argv[1]) : 1000;
 	std::cout << "test iterations: " << ITERS << '\n';
-	const size_t VECSIZE = argc > 2 ? atoi(argv[2]) : DEFAULT_VECSIZE;
+	const size_t VECSIZE = argc > 2 ? atoi(argv[2]) : 1000;
 	std::cout << "vector size: " << VECSIZE << '\n';
-	/*const uint32_t MINLEN = argc > 3 ? atoi(argv[3]) : 1;
-	std::cout << "min len: " << MINLEN << '\n';	
-	const uint32_t MAXLEN = argc > 4 ? atoi(argv[4]) : 9;
-	std::cout << "max len: "  << MAXLEN << '\n';
-
-	Benchmark(ITERS, VECSIZE, MINLEN == 0 ? 1 : MINLEN, MAXLEN > 9 ? MAXLEN : 9);*/
 
 	Benchmark2(ITERS, VECSIZE);
-
-	//for (;;)
-	//{
-	//	std::string str;
-	//	std::cin >> str;
-	//	if (str == "x" || str == "end" || str == "exit")
-	//		break;
-
-	//	double value;
-	//	const auto res = std::from_chars(str.data(), str.data() + str.size(), value, std::chars_format::hex);
-
-	//	if (res.ec == std::errc::invalid_argument)
-	//	{
-	//		std::cout << "invalid argument!, res.p distance: " << res.ptr - str.data() << '\n';
-	//	}
-	//	else if (res.ec == std::errc::result_out_of_range)
-	//	{
-	//		std::cout << "out of range! res.p distance: " << res.ptr - str.data() << '\n';
-	//	}
-	//	else
-	//	{
-	//		std::cout << "value: " << value << ", distance: " << res.ptr - str.data() << '\n';
-
-	//		std::string strBack = str;
-	//		strBack.clear();
-
-	//		if (auto[ptr, ec] = std::to_chars(strBack.data(), strBack.data() + strBack.size(), static_cast<int>(value)); ec == std::errc())
-	//		{
-	//			std::cout << "converted back to integer: " << std::string_view(strBack.data(), ptr - strBack.data()) << ", " << strBack << '\n'; // not NUL-terminated!
-	//		}
-	//	}
-	//}
 }
